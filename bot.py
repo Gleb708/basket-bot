@@ -1,4 +1,21 @@
+import subprocess
+import sys
 import os
+
+# ---------- АВТОУСТАНОВКА БИБЛИОТЕК (если их нет) ----------
+required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'apscheduler', 'python-telegram-bot']
+
+def install_package(package):
+    subprocess.check_call([sys.executable, '-m', 'pip', 'install', package])
+
+for pkg in required_packages:
+    try:
+        __import__(pkg.replace('-', '_'))  # для telegram-bot нужно заменить дефис
+    except ImportError:
+        print(f"⚠️ Устанавливаю {pkg}...")
+        install_package(pkg)
+
+# Теперь импортируем всё как обычно
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -9,9 +26,9 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 
-# ---------- НАСТРОЙКИ (ваши данные) ----------
+# ---------- НАСТРОЙКИ ----------
 TOKEN = "8814276089:AAFT6vuV1wsU2W-Wpv7Z4QYYYVNExaVM1I8"
-CHAT_IDS = [771729237, 749809260]   # Ваш и друга
+CHAT_IDS = [771729237, 749809260]
 EXCEL_FILE = "forecast_bayesian_clean.xlsx"
 TIMEZONE = pytz.timezone("Europe/Moscow")
 
