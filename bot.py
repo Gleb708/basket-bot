@@ -84,7 +84,7 @@ def bayesian_forecast(y):
     tb_max = round_down_to_half(mu - Z_75 * se)
     return mu, se, L70, U70, tm_min, tb_max
 
-# ---------- ГЕНЕРАЦИЯ ПРОГНОЗОВ ИЗ Basket_3.xlsx (с фильтром по типу дня) ----------
+# ---------- ГЕНЕРАЦИЯ ПРОГНОЗОВ ----------
 def generate_forecasts():
     if not os.path.exists(BASKEt_FILE):
         logger.error(f"Файл {BASKEt_FILE} не найден.")
@@ -97,21 +97,17 @@ def generate_forecasts():
         if 'Статус' in df.columns:
             df = df[df['Статус'] == 'Завершена'].copy()
 
-        # --- ОПРЕДЕЛЯЕМ ТИП ДНЯ (БУДНИЙ / ВЫХОДНОЙ) И ФИЛЬТРУЕМ ИСТОРИЮ ---
         today = datetime.now(TIMEZONE).date()
-        is_weekend = today.weekday() >= 5  # 5=суббота, 6=воскресенье
+        is_weekend = today.weekday() >= 5
         day_type = 'weekend' if is_weekend else 'weekday'
         logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'} день. Использую историю для {day_type}.")
 
-        # Добавляем колонку с типом дня для каждого матча
         df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
-        # Оставляем только матчи, совпадающие с сегодняшним типом дня
         df = df[df['day_type'] == day_type].copy()
         if df.empty:
-            logger.warning("Нет исторических матчей для данного типа дня. Прогнозы не будут сгенерированы.")
+            logger.warning("Нет исторических матчей для данного типа дня.")
             return False
 
-        # Формируем ключи пар
         teams1 = df['Команда 1'].astype(str).str.strip()
         teams2 = df['Команда 2'].astype(str).str.strip()
         pairs = []
@@ -185,7 +181,7 @@ def generate_forecasts():
         logger.error(f"Ошибка генерации прогнозов: {e}")
         return False
 
-# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ НА СЕГОДНЯ (с учётом типа дня) ----------
+# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ ----------
 def get_typical_time(group):
     return group['datetime'].max().time()
 
@@ -195,7 +191,6 @@ def generate_schedule_today():
     df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
     df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
     df = df.dropna(subset=['datetime'])
-    # Фильтруем только те дни, которые совпадают с сегодняшним типом
     today = datetime.now(TIMEZONE).date()
     is_weekend = today.weekday() >= 5
     day_type = 'weekend' if is_weekend else 'weekday'
@@ -214,7 +209,6 @@ def generate_schedule_today():
     df['матчап'] = pairs
 
     schedule = []
-    today = datetime.now(TIMEZONE).date()
     for matchup, group in df.groupby('матчап'):
         last_time = get_typical_time(group)
         dt = datetime.combine(today, last_time)
@@ -222,7 +216,6 @@ def generate_schedule_today():
         schedule.append({'матчап': matchup, 'datetime': dt})
     return pd.DataFrame(schedule)
 
-# ---------- ЗАГРУЗКА РАСПИСАНИЯ ----------
 def load_schedule():
     if not os.path.exists(BASKEt_FILE):
         return generate_schedule_today()
@@ -244,55 +237,56 @@ def load_schedule():
             df_today['матчап'] = pairs
             return df_today[['матчап', 'datetime']]
         else:
-            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории (с учётом типа дня).")
+            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории.")
             return generate_schedule_today()
     except Exception as e:
         logger.error(f"Ошибка загрузки расписания: {e}")
         return generate_schedule_today()
 
-# ---------- ЗАГРУЗКА ПРОГНОЗОВ ----------
 def load_forecasts():
     if not os.path.exists(FORECAST_FILE):
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
-# ---------- НОВОЕ ФОРМИРОВАНИЕ СООБЩЕНИЯ (по шаблону) ----------
-def build_message(forecast_df, schedule_df):
+# ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ (с поддержкой offset) ----------
+def build_message(forecast_df, schedule_df, offset=0):
+    """
+    offset=0 — текущий час, offset=1 — следующий час, и т.д.
+    """
     if forecast_df.empty or schedule_df.empty:
         return "Нет данных для прогнозов."
 
     now = datetime.now(TIMEZONE)
-    hour_start = now.replace(minute=0, second=0, microsecond=0)
+    # Смещаем начало часа на offset
+    hour_start = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
     hour_end = hour_start + timedelta(hours=1)
+
     mask = (schedule_df['datetime'] >= hour_start) & (schedule_df['datetime'] < hour_end)
     upcoming = schedule_df[mask]
     if upcoming.empty:
-        return f"В этом часе ({hour_start.strftime('%H:%M')}) матчей нет."
+        return f"В {'следующем' if offset == 1 else ''} часе ({hour_start.strftime('%H:%M')}) матчей нет."
 
     merged = pd.merge(upcoming, forecast_df, left_on='матчап', right_on='Матчап', how='inner')
     if merged.empty:
         return "Нет прогнозов для предстоящих матчей."
 
-    # Определяем день недели для заголовка
-    day_name = now.strftime('%A')  # Monday, Tuesday, ...
-    # Переводим на русский (можно расширить)
+    # Заголовок с днём недели
+    day_name = now.strftime('%A')
     ru_days = {
         'Monday': 'Понедельник', 'Tuesday': 'Вторник', 'Wednesday': 'Среда',
         'Thursday': 'Четверг', 'Friday': 'Пятница', 'Saturday': 'Суббота', 'Sunday': 'Воскресенье'
     }
     day_ru = ru_days.get(day_name, day_name)
 
-    lines = [f"📅 {day_ru}, {hour_start.strftime('%H:%M')}\n"]
+    prefix = "Следующий час" if offset == 1 else "Текущий час"
+    lines = [f"📅 {day_ru}, {prefix} ({hour_start.strftime('%H:%M')})\n"]
+
     for _, row in merged.iterrows():
         match = row['матчап']
-        mu = row['Прогноз μ']
-        se = row['SE прогноза']
         interval = row['70% интервал']
         tm = row['ТМ (мин. линия ≥75%)']
         tb = row['ТБ (макс. линия ≥75%)']
         stable = row['Стабильность']
-
-        # Иконка стабильности
         stable_icon = "✅" if stable == "Стабильная" else "⚠️"
 
         lines.append(f"📊 {match}")
@@ -300,11 +294,11 @@ def build_message(forecast_df, schedule_df):
         lines.append(f"🔹 ТМ (мин. линия ≥75%): {tm}")
         lines.append(f"🔹 ТБ (макс. линия ≥75%): {tb}")
         lines.append(f"🔹 Стабильность: {stable_icon} {stable}")
-        lines.append("")  # пустая строка между матчами
+        lines.append("")
 
     return "\n".join(lines)
 
-# ---------- ЗАДАЧА ДЛЯ ОТПРАВКИ ----------
+# ---------- ОТПРАВКА ----------
 async def send_forecast(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск отправки прогнозов...")
     if not generate_forecasts():
@@ -315,16 +309,18 @@ async def send_forecast(context: ContextTypes.DEFAULT_TYPE):
     schedule_df = load_schedule()
     if forecast_df.empty or schedule_df.empty:
         for chat_id in CHAT_IDS:
-            await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов (возможно, нет матчей на сегодня).")
+            await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов.")
         return
-    msg = build_message(forecast_df, schedule_df)
+    msg = build_message(forecast_df, schedule_df, offset=0)
     for chat_id in CHAT_IDS:
         await context.bot.send_message(chat_id=chat_id, text=msg)
-    logger.info("Прогнозы отправлены всем получателям.")
+    logger.info("Прогнозы отправлены.")
 
 # ---------- КОМАНДЫ ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот запущен! Прогнозы приходят за 5 минут до каждого часа.")
+    await update.message.reply_text("Бот запущен! Прогнозы приходят за 5 минут до каждого часа.\n"
+                                   "/now — прогнозы на текущий час\n"
+                                   "/next — прогнозы на следующий час")
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not generate_forecasts():
@@ -332,7 +328,16 @@ async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
-    msg = build_message(forecast_df, schedule_df)
+    msg = build_message(forecast_df, schedule_df, offset=0)
+    await update.message.reply_text(msg)
+
+async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not generate_forecasts():
+        await update.message.reply_text("Не удалось сгенерировать прогнозы.")
+        return
+    forecast_df = load_forecasts()
+    schedule_df = load_schedule()
+    msg = build_message(forecast_df, schedule_df, offset=1)
     await update.message.reply_text(msg)
 
 # ---------- ЗАПУСК ----------
@@ -343,6 +348,7 @@ def main():
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("now", now))
+    application.add_handler(CommandHandler("next", next_hour))  # новая команда
 
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
     scheduler.add_job(
