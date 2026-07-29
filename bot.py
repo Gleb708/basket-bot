@@ -4,7 +4,7 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# ---------- АВТОУСТАНОВКА БИБЛИОТЕК (если их нет) ----------
+# ---------- АВТОУСТАНОВКА БИБЛИОТЕК ----------
 required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'apscheduler', 'python-telegram-bot', 'scipy']
 for pkg in required_packages:
     try:
@@ -13,7 +13,7 @@ for pkg in required_packages:
         print(f"⚠️ Устанавливаю {pkg}...")
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
 
-# Теперь импортируем всё как обычно
+# Теперь импорты
 import pandas as pd
 import numpy as np
 from scipy.stats import t as t_dist
@@ -41,7 +41,7 @@ CV_THRESHOLD = 10.0
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАСЧЁТА ПРОГНОЗОВ ----------
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАСЧЁТА ----------
 def round_up_to_half(x):
     return np.ceil(x * 2) / 2
 
@@ -49,7 +49,6 @@ def round_down_to_half(x):
     return np.floor(x * 2) / 2
 
 def winsorize_series(y, n_std=2.0):
-    """Мягкая винсоризация на основе медианы и MAD."""
     n = len(y)
     if n < 4:
         return y, False
@@ -87,20 +86,16 @@ def bayesian_forecast(y):
 
 # ---------- ГЕНЕРАЦИЯ ПРОГНОЗОВ ИЗ Basket_3.xlsx ----------
 def generate_forecasts():
-    """Читает Basket_3.xlsx, вычисляет байесовские прогнозы и сохраняет forecast_bayesian_clean.xlsx."""
     if not os.path.exists(BASKEt_FILE):
-        logger.error(f"Файл {BASKEt_FILE} не найден. Прогнозы не сгенерированы.")
+        logger.error(f"Файл {BASKEt_FILE} не найден.")
         return False
     try:
         df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1', engine='openpyxl')
         df = df.dropna(subset=['сумма очков'])
-        # Дата+время
         df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
         df = df.dropna(subset=['datetime'])
-        # Только завершённые (или все, если статус не важен)
         if 'Статус' in df.columns:
             df = df[df['Статус'] == 'Завершена'].copy()
-        # Унифицированный ключ пары
         teams1 = df['Команда 1'].astype(str).str.strip()
         teams2 = df['Команда 2'].astype(str).str.strip()
         pairs = []
@@ -130,7 +125,6 @@ def generate_forecasts():
             else:
                 stability = "Нестабильная" if (cv_all is not None and cv_all > CV_THRESHOLD) else "Стабильная"
 
-            # Винсоризация и прогноз
             y_clean, was_changed = winsorize_series(y_all, n_std=2.0)
             n_clean = len(y_clean)
             forecast = bayesian_forecast(y_clean)
@@ -175,25 +169,79 @@ def generate_forecasts():
         logger.error(f"Ошибка генерации прогнозов: {e}")
         return False
 
-# ---------- ЗАГРУЗКА ПРОГНОЗОВ (из сгенерированного файла) ----------
-def load_forecasts():
-    if not os.path.exists(FORECAST_FILE):
-        return pd.DataFrame()
-    return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
+# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ НА СЕГОДНЯ (если нет в файле) ----------
+def get_typical_time(group):
+    """Возвращает время последнего матча для пары (как datetime.time)."""
+    # Берём время последней игры
+    last_datetime = group['datetime'].max()
+    return last_datetime.time()
 
-def load_schedule():
+def generate_schedule_today():
+    """
+    Создаёт DataFrame с расписанием на сегодня на основе истории.
+    Для каждого матчапа берётся время последней игры.
+    """
     if not os.path.exists(BASKEt_FILE):
         return pd.DataFrame()
     df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
     df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
-    df = df[df['datetime'].dt.date == datetime.now(TIMEZONE).date()]
+    df = df.dropna(subset=['datetime'])
     teams1 = df['Команда 1'].astype(str).str.strip()
     teams2 = df['Команда 2'].astype(str).str.strip()
     pairs = []
     for a, b in zip(teams1, teams2):
-        pairs.append(f"{a} – {b}" if a < b else f"{b} – {a}")
+        if a < b:
+            pairs.append(f"{a} – {b}")
+        else:
+            pairs.append(f"{b} – {a}")
     df['матчап'] = pairs
-    return df[['матчап', 'datetime']]
+
+    # Группируем по матчапу и берём время последнего матча
+    schedule = []
+    today = datetime.now(TIMEZONE).date()
+    for matchup, group in df.groupby('матчап'):
+        last_time = get_typical_time(group)
+        # Создаём datetime на сегодня с этим временем
+        dt = datetime.combine(today, last_time)
+        dt = TIMEZONE.localize(dt)
+        schedule.append({'матчап': matchup, 'datetime': dt})
+    return pd.DataFrame(schedule)
+
+# ---------- ЗАГРУЗКА РАСПИСАНИЯ (сначала из файла, если нет – генерируем) ----------
+def load_schedule():
+    if not os.path.exists(BASKEt_FILE):
+        return generate_schedule_today()
+    try:
+        df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
+        df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
+        df = df.dropna(subset=['datetime'])
+        today = datetime.now(TIMEZONE).date()
+        # Фильтруем по сегодняшней дате
+        df_today = df[df['datetime'].dt.date == today].copy()
+        if not df_today.empty:
+            teams1 = df_today['Команда 1'].astype(str).str.strip()
+            teams2 = df_today['Команда 2'].astype(str).str.strip()
+            pairs = []
+            for a, b in zip(teams1, teams2):
+                if a < b:
+                    pairs.append(f"{a} – {b}")
+                else:
+                    pairs.append(f"{b} – {a}")
+            df_today['матчап'] = pairs
+            return df_today[['матчап', 'datetime']]
+        else:
+            # Если на сегодня в файле нет записей – генерируем расписание
+            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории.")
+            return generate_schedule_today()
+    except Exception as e:
+        logger.error(f"Ошибка загрузки расписания: {e}")
+        return generate_schedule_today()
+
+# ---------- ЗАГРУЗКА ПРОГНОЗОВ ----------
+def load_forecasts():
+    if not os.path.exists(FORECAST_FILE):
+        return pd.DataFrame()
+    return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
 # ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ ----------
 def build_message(forecast_df, schedule_df):
@@ -241,10 +289,9 @@ def build_message(forecast_df, schedule_df):
 # ---------- ЗАДАЧА ДЛЯ ОТПРАВКИ ----------
 async def send_forecast(context: ContextTypes.DEFAULT_TYPE):
     logger.info("Запуск отправки прогнозов...")
-    # Сначала генерируем свежие прогнозы из Basket_3.xlsx
     if not generate_forecasts():
         for chat_id in CHAT_IDS:
-            await context.bot.send_message(chat_id=chat_id, text="Не удалось сгенерировать прогнозы (проверьте файл Basket_3.xlsx).")
+            await context.bot.send_message(chat_id=chat_id, text="Не удалось сгенерировать прогнозы.")
         return
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
@@ -262,7 +309,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Бот запущен! Прогнозы приходят за 5 минут до каждого часа.")
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Генерируем свежие прогнозы по запросу
     if not generate_forecasts():
         await update.message.reply_text("Не удалось сгенерировать прогнозы.")
         return
@@ -273,7 +319,6 @@ async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ---------- ЗАПУСК ----------
 def main():
-    # При старте сразу генерируем прогнозы
     logger.info("Генерация прогнозов при старте...")
     generate_forecasts()
 
