@@ -22,9 +22,16 @@ from datetime import datetime, timedelta
 import logging
 import pytz
 from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+
+# ---------- НАСТРОЙКА ЛОГИРОВАНИЯ (ДЕБАГ) ----------
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 # ---------- КОНФИГУРАЦИЯ ----------
 TOKEN = "8814276089:AAFT6vuV1wsU2W-Wpv7Z4QYYYVNExaVM1I8"
@@ -37,9 +44,6 @@ k = 3
 Z_75 = norm.ppf(0.75)
 MIN_GAMES_FOR_STABLE = 3
 CV_THRESHOLD = 10.0
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАСЧЁТА ----------
 def round_up_to_half(x):
@@ -248,16 +252,12 @@ def load_forecasts():
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
-# ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ (с поддержкой offset) ----------
+# ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ ----------
 def build_message(forecast_df, schedule_df, offset=0):
-    """
-    offset=0 — текущий час, offset=1 — следующий час, и т.д.
-    """
     if forecast_df.empty or schedule_df.empty:
         return "Нет данных для прогнозов."
 
     now = datetime.now(TIMEZONE)
-    # Смещаем начало часа на offset
     hour_start = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
     hour_end = hour_start + timedelta(hours=1)
 
@@ -270,7 +270,6 @@ def build_message(forecast_df, schedule_df, offset=0):
     if merged.empty:
         return "Нет прогнозов для предстоящих матчей."
 
-    # Заголовок с днём недели
     day_name = now.strftime('%A')
     ru_days = {
         'Monday': 'Понедельник', 'Tuesday': 'Вторник', 'Wednesday': 'Среда',
@@ -316,13 +315,16 @@ async def send_forecast(context: ContextTypes.DEFAULT_TYPE):
         await context.bot.send_message(chat_id=chat_id, text=msg)
     logger.info("Прогнозы отправлены.")
 
-# ---------- КОМАНДЫ ----------
+# ---------- ОБРАБОТЧИКИ КОМАНД ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Бот запущен! Прогнозы приходят за 5 минут до каждого часа.\n"
-                                   "/now — прогнозы на текущий час\n"
-                                   "/next — прогнозы на следующий час")
+    await update.message.reply_text(
+        "Бот запущен! Прогнозы приходят за 5 минут до каждого часа.\n"
+        "/now — прогнозы на текущий час\n"
+        "/next — прогнозы на следующий час"
+    )
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.debug(f"Команда /now от {update.effective_user.id}")
     if not generate_forecasts():
         await update.message.reply_text("Не удалось сгенерировать прогнозы.")
         return
@@ -332,6 +334,7 @@ async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(msg)
 
 async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.debug(f"Команда /next от {update.effective_user.id}")
     if not generate_forecasts():
         await update.message.reply_text("Не удалось сгенерировать прогнозы.")
         return
@@ -340,16 +343,30 @@ async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = build_message(forecast_df, schedule_df, offset=1)
     await update.message.reply_text(msg)
 
+# ---------- ОТЛАДОЧНЫЙ ОБРАБОТЧИК (ЭХО) ----------
+async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text
+    logger.debug(f"Получено текстовое сообщение: {text}")
+    # Отвечаем только если это не команда (чтобы не мешать)
+    if not text.startswith('/'):
+        await update.message.reply_text(f"Эхо: {text}")
+
 # ---------- ЗАПУСК ----------
 def main():
     logger.info("Генерация прогнозов при старте...")
     generate_forecasts()
 
     application = Application.builder().token(TOKEN).build()
+
+    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("now", now))
-    application.add_handler(CommandHandler("next", next_hour))  # новая команда
+    application.add_handler(CommandHandler("next", next_hour))
 
+    # Отладочный обработчик для всех текстовых сообщений (кроме команд)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+
+    # Планировщик
     scheduler = BackgroundScheduler(timezone=TIMEZONE)
     scheduler.add_job(
         lambda: application.create_task(send_forecast(application.bot, None)),
@@ -357,6 +374,7 @@ def main():
     )
     scheduler.start()
     logger.info("Планировщик запущен. Бот будет отправлять прогнозы в 55 минут каждого часа.")
+
     application.run_polling()
 
 if __name__ == "__main__":
