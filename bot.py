@@ -84,7 +84,7 @@ def bayesian_forecast(y):
     tb_max = round_down_to_half(mu - Z_75 * se)
     return mu, se, L70, U70, tm_min, tb_max
 
-# ---------- ГЕНЕРАЦИЯ ПРОГНОЗОВ ИЗ Basket_3.xlsx ----------
+# ---------- ГЕНЕРАЦИЯ ПРОГНОЗОВ ИЗ Basket_3.xlsx (с фильтром по типу дня) ----------
 def generate_forecasts():
     if not os.path.exists(BASKEt_FILE):
         logger.error(f"Файл {BASKEt_FILE} не найден.")
@@ -96,6 +96,22 @@ def generate_forecasts():
         df = df.dropna(subset=['datetime'])
         if 'Статус' in df.columns:
             df = df[df['Статус'] == 'Завершена'].copy()
+
+        # --- ОПРЕДЕЛЯЕМ ТИП ДНЯ (БУДНИЙ / ВЫХОДНОЙ) И ФИЛЬТРУЕМ ИСТОРИЮ ---
+        today = datetime.now(TIMEZONE).date()
+        is_weekend = today.weekday() >= 5  # 5=суббота, 6=воскресенье
+        day_type = 'weekend' if is_weekend else 'weekday'
+        logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'} день. Использую историю для {day_type}.")
+
+        # Добавляем колонку с типом дня для каждого матча
+        df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
+        # Оставляем только матчи, совпадающие с сегодняшним типом дня
+        df = df[df['day_type'] == day_type].copy()
+        if df.empty:
+            logger.warning("Нет исторических матчей для данного типа дня. Прогнозы не будут сгенерированы.")
+            return False
+
+        # Формируем ключи пар
         teams1 = df['Команда 1'].astype(str).str.strip()
         teams2 = df['Команда 2'].astype(str).str.strip()
         pairs = []
@@ -169,23 +185,24 @@ def generate_forecasts():
         logger.error(f"Ошибка генерации прогнозов: {e}")
         return False
 
-# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ НА СЕГОДНЯ (если нет в файле) ----------
+# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ НА СЕГОДНЯ (с учётом типа дня) ----------
 def get_typical_time(group):
-    """Возвращает время последнего матча для пары (как datetime.time)."""
-    # Берём время последней игры
-    last_datetime = group['datetime'].max()
-    return last_datetime.time()
+    return group['datetime'].max().time()
 
 def generate_schedule_today():
-    """
-    Создаёт DataFrame с расписанием на сегодня на основе истории.
-    Для каждого матчапа берётся время последней игры.
-    """
     if not os.path.exists(BASKEt_FILE):
         return pd.DataFrame()
     df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
     df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
     df = df.dropna(subset=['datetime'])
+    # Фильтруем только те дни, которые совпадают с сегодняшним типом
+    today = datetime.now(TIMEZONE).date()
+    is_weekend = today.weekday() >= 5
+    day_type = 'weekend' if is_weekend else 'weekday'
+    df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
+    df = df[df['day_type'] == day_type].copy()
+    if df.empty:
+        return pd.DataFrame()
     teams1 = df['Команда 1'].astype(str).str.strip()
     teams2 = df['Команда 2'].astype(str).str.strip()
     pairs = []
@@ -196,18 +213,16 @@ def generate_schedule_today():
             pairs.append(f"{b} – {a}")
     df['матчап'] = pairs
 
-    # Группируем по матчапу и берём время последнего матча
     schedule = []
     today = datetime.now(TIMEZONE).date()
     for matchup, group in df.groupby('матчап'):
         last_time = get_typical_time(group)
-        # Создаём datetime на сегодня с этим временем
         dt = datetime.combine(today, last_time)
         dt = TIMEZONE.localize(dt)
         schedule.append({'матчап': matchup, 'datetime': dt})
     return pd.DataFrame(schedule)
 
-# ---------- ЗАГРУЗКА РАСПИСАНИЯ (сначала из файла, если нет – генерируем) ----------
+# ---------- ЗАГРУЗКА РАСПИСАНИЯ ----------
 def load_schedule():
     if not os.path.exists(BASKEt_FILE):
         return generate_schedule_today()
@@ -216,7 +231,6 @@ def load_schedule():
         df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
         df = df.dropna(subset=['datetime'])
         today = datetime.now(TIMEZONE).date()
-        # Фильтруем по сегодняшней дате
         df_today = df[df['datetime'].dt.date == today].copy()
         if not df_today.empty:
             teams1 = df_today['Команда 1'].astype(str).str.strip()
@@ -230,8 +244,7 @@ def load_schedule():
             df_today['матчап'] = pairs
             return df_today[['матчап', 'datetime']]
         else:
-            # Если на сегодня в файле нет записей – генерируем расписание
-            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории.")
+            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории (с учётом типа дня).")
             return generate_schedule_today()
     except Exception as e:
         logger.error(f"Ошибка загрузки расписания: {e}")
@@ -243,7 +256,7 @@ def load_forecasts():
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
-# ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ ----------
+# ---------- НОВОЕ ФОРМИРОВАНИЕ СООБЩЕНИЯ (по шаблону) ----------
 def build_message(forecast_df, schedule_df):
     if forecast_df.empty or schedule_df.empty:
         return "Нет данных для прогнозов."
@@ -260,7 +273,16 @@ def build_message(forecast_df, schedule_df):
     if merged.empty:
         return "Нет прогнозов для предстоящих матчей."
 
-    lines = [f"⏰ Прогнозы на матчи в {hour_start.strftime('%H:%M')}:\n"]
+    # Определяем день недели для заголовка
+    day_name = now.strftime('%A')  # Monday, Tuesday, ...
+    # Переводим на русский (можно расширить)
+    ru_days = {
+        'Monday': 'Понедельник', 'Tuesday': 'Вторник', 'Wednesday': 'Среда',
+        'Thursday': 'Четверг', 'Friday': 'Пятница', 'Saturday': 'Суббота', 'Sunday': 'Воскресенье'
+    }
+    day_ru = ru_days.get(day_name, day_name)
+
+    lines = [f"📅 {day_ru}, {hour_start.strftime('%H:%M')}\n"]
     for _, row in merged.iterrows():
         match = row['матчап']
         mu = row['Прогноз μ']
@@ -269,21 +291,17 @@ def build_message(forecast_df, schedule_df):
         tm = row['ТМ (мин. линия ≥75%)']
         tb = row['ТБ (макс. линия ≥75%)']
         stable = row['Стабильность']
-        rec = ""
-        if stable == "Стабильная" and pd.notna(tm) and pd.notna(tb):
-            if tm - tb > 5:
-                rec = "✅ ВАЛЮЙ! (Широкий коридор)"
-            elif mu > (tm + tb)/2:
-                rec = "📈 Склонность к ТБ"
-            else:
-                rec = "📉 Склонность к ТМ"
-        else:
-            rec = "⚠️ Нестабильная пара – осторожно."
-        lines.append(f"🔹 {match}")
-        lines.append(f"   μ = {mu:.1f}  SE = {se:.2f}")
-        lines.append(f"   70% интервал: {interval}")
-        lines.append(f"   ТМ≥75%: {tm}  |  ТБ≥75%: {tb}")
-        lines.append(f"   {rec}\n")
+
+        # Иконка стабильности
+        stable_icon = "✅" if stable == "Стабильная" else "⚠️"
+
+        lines.append(f"📊 {match}")
+        lines.append(f"🔹 70% интервал: {interval}")
+        lines.append(f"🔹 ТМ (мин. линия ≥75%): {tm}")
+        lines.append(f"🔹 ТБ (макс. линия ≥75%): {tb}")
+        lines.append(f"🔹 Стабильность: {stable_icon} {stable}")
+        lines.append("")  # пустая строка между матчами
+
     return "\n".join(lines)
 
 # ---------- ЗАДАЧА ДЛЯ ОТПРАВКИ ----------
