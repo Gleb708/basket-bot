@@ -180,18 +180,18 @@ def generate_forecasts():
         logger.error(f"Ошибка генерации прогнозов: {e}")
         return False
 
-# ---------- РАСПИСАНИЕ ----------
-def get_typical_time(group):
-    return group['datetime'].max().time()
-
-def generate_schedule_today():
+# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ ДЛЯ КОНКРЕТНОЙ ДАТЫ ----------
+def generate_schedule_for_date(date):
+    """
+    Генерирует расписание матчей для указанной даты на основе исторических данных.
+    Фильтрует историю по типу дня (будний/выходной) для этой даты.
+    """
     if not os.path.exists(BASKEt_FILE):
         return pd.DataFrame()
     df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
     df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
     df = df.dropna(subset=['datetime'])
-    today = datetime.now(TIMEZONE).date()
-    is_weekend = today.weekday() >= 5
+    is_weekend = date.weekday() >= 5
     day_type = 'weekend' if is_weekend else 'weekday'
     df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
     df = df[df['day_type'] == day_type].copy()
@@ -209,39 +209,65 @@ def generate_schedule_today():
 
     schedule = []
     for matchup, group in df.groupby('матчап'):
-        last_time = get_typical_time(group)
-        dt = datetime.combine(today, last_time)
+        last_time = group['datetime'].max().time()
+        dt = datetime.combine(date, last_time)
         dt = TIMEZONE.localize(dt)
         schedule.append({'матчап': matchup, 'datetime': dt})
     return pd.DataFrame(schedule)
 
+# ---------- ЗАГРУЗКА РАСПИСАНИЯ (с переходом через полночь) ----------
 def load_schedule():
-    if not os.path.exists(BASKEt_FILE):
-        return generate_schedule_today()
-    try:
-        df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
-        df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
-        df = df.dropna(subset=['datetime'])
-        today = datetime.now(TIMEZONE).date()
-        df_today = df[df['datetime'].dt.date == today].copy()
-        if not df_today.empty:
-            teams1 = df_today['Команда 1'].astype(str).str.strip()
-            teams2 = df_today['Команда 2'].astype(str).str.strip()
-            pairs = []
-            for a, b in zip(teams1, teams2):
-                if a < b:
-                    pairs.append(f"{a} – {b}")
-                else:
-                    pairs.append(f"{b} – {a}")
-            df_today['матчап'] = pairs
-            return df_today[['матчап', 'datetime']]
-        else:
-            logger.info("В файле нет матчей на сегодня, генерирую расписание из истории.")
-            return generate_schedule_today()
-    except Exception as e:
-        logger.error(f"Ошибка загрузки расписания: {e}")
-        return generate_schedule_today()
+    now = datetime.now(TIMEZONE)
+    today = now.date()
+    # Список дат для расписания: сегодня и, если час >= 23, добавляем завтра
+    dates = [today]
+    if now.hour >= 23:
+        dates.append(today + timedelta(days=1))
+        logger.info("Переход через полночь – добавлено расписание на завтра.")
 
+    all_schedule = []
+    for date in dates:
+        is_weekend = date.weekday() >= 5
+        # Сначала пытаемся прочитать из файла
+        if os.path.exists(BASKEt_FILE):
+            try:
+                df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
+                df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
+                df = df.dropna(subset=['datetime'])
+                # Фильтруем по дате
+                df_date = df[df['datetime'].dt.date == date].copy()
+                if not df_date.empty:
+                    # Фильтруем по типу дня (день недели матча)
+                    df_date['day_of_week'] = df_date['datetime'].dt.weekday
+                    if is_weekend:
+                        df_date = df_date[df_date['day_of_week'] >= 5]
+                    else:
+                        df_date = df_date[df_date['day_of_week'] < 5]
+                    if not df_date.empty:
+                        teams1 = df_date['Команда 1'].astype(str).str.strip()
+                        teams2 = df_date['Команда 2'].astype(str).str.strip()
+                        pairs = []
+                        for a, b in zip(teams1, teams2):
+                            if a < b:
+                                pairs.append(f"{a} – {b}")
+                            else:
+                                pairs.append(f"{b} – {a}")
+                        df_date['матчап'] = pairs
+                        all_schedule.append(df_date[['матчап', 'datetime']])
+                        continue
+            except Exception as e:
+                logger.error(f"Ошибка чтения расписания из файла для {date}: {e}")
+        # Если не удалось прочитать из файла или нет подходящих матчей, генерируем из истории
+        schedule = generate_schedule_for_date(date)
+        if not schedule.empty:
+            all_schedule.append(schedule)
+
+    if all_schedule:
+        return pd.concat(all_schedule, ignore_index=True)
+    else:
+        return pd.DataFrame()
+
+# ---------- ЗАГРУЗКА ПРОГНОЗОВ ----------
 def load_forecasts():
     if not os.path.exists(FORECAST_FILE):
         return pd.DataFrame()
@@ -311,11 +337,10 @@ def build_message(forecast_df, schedule_df, offset=0, include_motivation=False):
 
     return "\n".join(lines)
 
-# ---------- ЗАДАЧА ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ С УВЕДОМЛЕНИЕМ ----------
+# ---------- ЗАДАЧА ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ ----------
 async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🔄 Запуск обновления статистики из 2score.pro...")
     try:
-        # Запускаем скрипт обновления
         result = subprocess.run(['python', 'update_results.py'], capture_output=True, text=True, timeout=60)
         if result.returncode == 0:
             msg = "✅ Статистика успешно обновлена! Данные из 2score.pro добавлены в Basket_3.xlsx."
@@ -323,7 +348,6 @@ async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
         else:
             msg = f"❌ Ошибка при обновлении статистики. Код ошибки: {result.returncode}\n{result.stderr}"
             logger.error(f"❌ Ошибка обновления: {result.stderr}")
-        # Отправляем уведомление всем пользователям
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text=msg)
     except Exception as e:
@@ -414,17 +438,17 @@ def main():
             }
         )
 
-        # 2. Ежедневное обновление данных с 2score.pro в 3:30
+        # 2. Ежедневное обновление данных с 2score.pro в 00:55
         job_queue.run_custom(
             update_and_notify,
             name="daily_update",
             job_kwargs={
-                'trigger': CronTrigger(hour=3, minute=30, timezone=TIMEZONE),
+                'trigger': CronTrigger(hour=0, minute=55, timezone=TIMEZONE),
                 'misfire_grace_time': 300
             }
         )
 
-        logger.info("✅ Планировщик настроен: отправка прогнозов в 55 минут каждого часа, обновление данных в 3:30.")
+        logger.info("✅ Планировщик настроен: отправка прогнозов в 55 минут каждого часа, обновление данных в 00:55.")
 
     application.run_polling()
 
