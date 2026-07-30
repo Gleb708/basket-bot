@@ -10,16 +10,6 @@ URL = "https://2score.pro/ru/basketball/ipbl-pro-division-2496666/"
 EXCEL_FILE = "Basket_3.xlsx"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# ---------- ОТЛАДКА: показываем строки с матчами ----------
-def debug_html(html):
-    lines = html.split('\n')
-    match_lines = [line for line in lines if 'Завершена' in line and 'href=' in line]
-    print(f"🔍 Найдено строк с 'Завершена': {len(match_lines)}")
-    if match_lines:
-        print("📄 Первые 5 таких строк:")
-        for i, line in enumerate(match_lines[:5]):
-            print(f"   {i+1}: {line[:200]}...")  # первые 200 символов
-
 # ---------- ФУНКЦИЯ ПУША ----------
 def push_to_github():
     if not GITHUB_TOKEN:
@@ -118,10 +108,16 @@ def update_excel():
         print(f"❌ Ошибка загрузки: {e}")
         return
 
-    # Отладочный вывод
-    debug_html(html)
+    # ----- ВЫВОДИМ ПЕРВЫЕ 2000 СИМВОЛОВ HTML ДЛЯ АНАЛИЗА -----
+    print("📄 Первые 2000 символов HTML:")
+    print(html[:2000])
+    print("... (конец вывода)")
 
+    # Ищем строки с "Завершена"
     lines = html.split('\n')
+    match_lines = [line for line in lines if 'Завершена' in line and 'href=' in line]
+    print(f"🔍 Найдено строк с 'Завершена': {len(match_lines)}")
+
     new_matches = []
     for line in lines:
         if 'Завершена' in line and 'href=' in line:
