@@ -21,7 +21,7 @@ from scipy.stats import norm
 from datetime import datetime, timedelta
 import logging
 import pytz
-from telegram import Update
+from telegram import Update, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
 from apscheduler.triggers.cron import CronTrigger
 
@@ -39,6 +39,14 @@ k = 3
 Z_75 = norm.ppf(0.75)
 MIN_GAMES_FOR_STABLE = 3
 CV_THRESHOLD = 10.0
+
+# ---------- КЛАВИАТУРА ----------
+def get_main_keyboard():
+    buttons = [
+        [KeyboardButton("📊 Статистика")],
+        [KeyboardButton("📅 Сейчас"), KeyboardButton("⏩ Далее")]
+    ]
+    return ReplyKeyboardMarkup(buttons, resize_keyboard=True)
 
 # ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
 def round_up_to_half(x):
@@ -411,7 +419,6 @@ async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text=msg)
         
-        # ---------- ОТПРАВКА СТАТИСТИКИ ----------
         stats_msg = calculate_daily_stats()
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text=stats_msg)
@@ -449,10 +456,10 @@ async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
 # ---------- ОБРАБОТЧИКИ КОМАНД ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "Бот запущен! Прогнозы приходят за 5 минут до каждого часа.\n"
-        "/now — прогнозы на текущий час\n"
-        "/next — прогнозы на следующий час\n"
-        "/stats — статистика за сегодня"
+        "🤖 Бот запущен!\n"
+        "Прогнозы приходят за 5 минут до каждого часа.\n\n"
+        "Используйте кнопки ниже для быстрых команд:",
+        reply_markup=get_main_keyboard()
     )
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -462,7 +469,7 @@ async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
     msg = build_message(forecast_df, schedule_df, offset=0, include_motivation=False)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, reply_markup=get_main_keyboard())
 
 async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not generate_forecasts():
@@ -471,19 +478,24 @@ async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
     msg = build_message(forecast_df, schedule_df, offset=1, include_motivation=False)
-    await update.message.reply_text(msg)
+    await update.message.reply_text(msg, reply_markup=get_main_keyboard())
 
-# ---------- НОВАЯ КОМАНДА /stats ----------
 async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Отправляет статистику за сегодня по запросу."""
     stats_msg = calculate_daily_stats()
-    await update.message.reply_text(stats_msg)
+    await update.message.reply_text(stats_msg, reply_markup=get_main_keyboard())
 
-# ---------- ЭХО-ОТЛАДКА ----------
-async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ---------- ОБРАБОТЧИК КНОПОК ----------
+async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    if not text.startswith('/'):
-        await update.message.reply_text(f"Эхо: {text}")
+    if text == "📊 Статистика":
+        await stats_command(update, context)
+    elif text == "📅 Сейчас":
+        await now(update, context)
+    elif text == "⏩ Далее":
+        await next_hour(update, context)
+    else:
+        # Эхо для любых других текстов (можно убрать)
+        await update.message.reply_text(f"Эхо: {text}", reply_markup=get_main_keyboard())
 
 # ---------- ЗАПУСК ----------
 def main():
@@ -495,8 +507,10 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("now", now))
     application.add_handler(CommandHandler("next", next_hour))
-    application.add_handler(CommandHandler("stats", stats_command))  # Новая команда
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
+    application.add_handler(CommandHandler("stats", stats_command))
+    
+    # Обработчик кнопок (текстовые сообщения, не являющиеся командами)
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     job_queue = application.job_queue
     if job_queue is None:
