@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---------- АВТОУСТАНОВКА ----------
-required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'python-telegram-bot', 'scipy']
+required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'python-telegram-bot', 'scipy', 'apscheduler']
 for pkg in required_packages:
     try:
         __import__(pkg.replace('-', '_'))
@@ -23,6 +23,7 @@ import logging
 import pytz
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+from apscheduler.triggers.cron import CronTrigger
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -246,17 +247,17 @@ def load_forecasts():
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
-# ---------- МОТИВАЦИОННОЕ СООБЩЕНИЕ ПО ДНЯМ ----------
+# ---------- МОТИВАЦИОННОЕ СООБЩЕНИЕ ----------
 def get_daily_message():
-    weekday = datetime.now(TIMEZONE).weekday()  # 0=пн, 6=вс
+    weekday = datetime.now(TIMEZONE).weekday()
     messages = {
         0: "Дорогой друг, желаю тебе сегодня фарту букмекерского 🍀",
         1: "Дорогой друг, сегодня желаю тебе нагнуть в привычную позу этот фонбет 💪",
         2: "Дорогой друг, да прибудет с тобой сила ставочная в этот прекрасный день 🔥",
-        3: "Дорогой друг, сегодня настал день играть по крупному и ёбаный рот этого казино 🎰",
+        3: "Дорогой друг, сегодня настал день играть по крупному и ё***** рот этого казино 🎰",
         4: "Дорогой друг, резиновая зина приказала ставить, так чего же ты ждешь? 📢",
-        5: "Дорогой друг, делай ставки и не еби мне голову 🤝",
-        6: "Дорогой друг, сегодня я твой господин и ебать в рот эту Америку 🇺🇸"
+        5: "Дорогой друг, делай ставки и не *** мне голову 🤝",
+        6: "Дорогой друг, сегодня я твой господин и ***** в рот эту Америку 🇺🇸"
     }
     return messages.get(weekday, "Удачных ставок!")
 
@@ -327,7 +328,6 @@ async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов.")
         return
 
-    # Если сейчас 10:55 (час = 10), добавляем мотивацию
     include_motivation = (now.hour == 10)
     msg = build_message(forecast_df, schedule_df, offset=0, include_motivation=include_motivation)
 
@@ -379,7 +379,7 @@ def main():
     application.add_handler(CommandHandler("next", next_hour))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Планировщик через JobQueue
+    # Планировщик через JobQueue с использованием job_kwargs
     job_queue = application.job_queue
     if job_queue is None:
         logger.error("JobQueue недоступен!")
@@ -387,11 +387,10 @@ def main():
         job_queue.run_custom(
             scheduled_send,
             name="hourly_forecast",
-            job_kwargs={'misfire_grace_time': 60},
-            trigger='cron',
-            minute=55,
-            hour='*',
-            timezone=TIMEZONE
+            job_kwargs={
+                'trigger': CronTrigger(minute=55, hour='*', timezone=TIMEZONE),
+                'misfire_grace_time': 60
+            }
         )
         logger.info("✅ Планировщик настроен: отправка в 55 минут каждого часа.")
 
