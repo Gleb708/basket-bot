@@ -5,7 +5,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # ---------- АВТОУСТАНОВКА ----------
-required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'python-telegram-bot', 'scipy', 'apscheduler']
+required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'python-telegram-bot', 'scipy', 'apscheduler', 'requests']
 for pkg in required_packages:
     try:
         __import__(pkg.replace('-', '_'))
@@ -311,7 +311,28 @@ def build_message(forecast_df, schedule_df, offset=0, include_motivation=False):
 
     return "\n".join(lines)
 
-# ---------- ЗАДАЧА ДЛЯ ПЛАНИРОВЩИКА ----------
+# ---------- ЗАДАЧА ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ С УВЕДОМЛЕНИЕМ ----------
+async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
+    logger.info("🔄 Запуск обновления статистики из 2score.pro...")
+    try:
+        # Запускаем скрипт обновления
+        result = subprocess.run(['python', 'update_results.py'], capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            msg = "✅ Статистика успешно обновлена! Данные из 2score.pro добавлены в Basket_3.xlsx."
+            logger.info("✅ Обновление статистики завершено успешно.")
+        else:
+            msg = f"❌ Ошибка при обновлении статистики. Код ошибки: {result.returncode}\n{result.stderr}"
+            logger.error(f"❌ Ошибка обновления: {result.stderr}")
+        # Отправляем уведомление всем пользователям
+        for chat_id in CHAT_IDS:
+            await context.bot.send_message(chat_id=chat_id, text=msg)
+    except Exception as e:
+        error_msg = f"❌ Критическая ошибка при обновлении: {e}"
+        logger.error(error_msg)
+        for chat_id in CHAT_IDS:
+            await context.bot.send_message(chat_id=chat_id, text=error_msg)
+
+# ---------- ЗАДАЧА ДЛЯ РАССЫЛКИ ПРОГНОЗОВ ----------
 async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
     now = datetime.now(TIMEZONE)
     logger.info(f"⏰ Запуск отправки прогнозов (время: {now.strftime('%H:%M')})...")
@@ -328,7 +349,6 @@ async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов.")
         return
 
-    # В 10:55 добавляем мотивацию, но отправляем прогнозы на следующий час (offset=1)
     include_motivation = (now.hour == 10)
     msg = build_message(forecast_df, schedule_df, offset=1, include_motivation=include_motivation)
 
@@ -384,6 +404,7 @@ def main():
     if job_queue is None:
         logger.error("JobQueue недоступен!")
     else:
+        # 1. Рассылка прогнозов каждый час в 55 минут
         job_queue.run_custom(
             scheduled_send,
             name="hourly_forecast",
@@ -392,7 +413,18 @@ def main():
                 'misfire_grace_time': 60
             }
         )
-        logger.info("✅ Планировщик настроен: отправка в 55 минут каждого часа (прогнозы на следующий час).")
+
+        # 2. Ежедневное обновление данных с 2score.pro в 3:30
+        job_queue.run_custom(
+            update_and_notify,
+            name="daily_update",
+            job_kwargs={
+                'trigger': CronTrigger(hour=3, minute=30, timezone=TIMEZONE),
+                'misfire_grace_time': 300
+            }
+        )
+
+        logger.info("✅ Планировщик настроен: отправка прогнозов в 55 минут каждого часа, обновление данных в 3:30.")
 
     application.run_polling()
 
