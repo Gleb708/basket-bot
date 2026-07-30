@@ -182,10 +182,6 @@ def generate_forecasts():
 
 # ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ ДЛЯ КОНКРЕТНОЙ ДАТЫ ----------
 def generate_schedule_for_date(date):
-    """
-    Генерирует расписание матчей для указанной даты на основе исторических данных.
-    Фильтрует историю по типу дня (будний/выходной) для этой даты.
-    """
     if not os.path.exists(BASKEt_FILE):
         return pd.DataFrame()
     df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
@@ -215,11 +211,10 @@ def generate_schedule_for_date(date):
         schedule.append({'матчап': matchup, 'datetime': dt})
     return pd.DataFrame(schedule)
 
-# ---------- ЗАГРУЗКА РАСПИСАНИЯ (с переходом через полночь) ----------
+# ---------- ЗАГРУЗКА РАСПИСАНИЯ ----------
 def load_schedule():
     now = datetime.now(TIMEZONE)
     today = now.date()
-    # Список дат для расписания: сегодня и, если час >= 23, добавляем завтра
     dates = [today]
     if now.hour >= 23:
         dates.append(today + timedelta(days=1))
@@ -228,16 +223,13 @@ def load_schedule():
     all_schedule = []
     for date in dates:
         is_weekend = date.weekday() >= 5
-        # Сначала пытаемся прочитать из файла
         if os.path.exists(BASKEt_FILE):
             try:
                 df = pd.read_excel(BASKEt_FILE, sheet_name='Лист1')
                 df['datetime'] = pd.to_datetime(df['дата'].astype(str) + ' ' + df['время'].astype(str), errors='coerce')
                 df = df.dropna(subset=['datetime'])
-                # Фильтруем по дате
                 df_date = df[df['datetime'].dt.date == date].copy()
                 if not df_date.empty:
-                    # Фильтруем по типу дня (день недели матча)
                     df_date['day_of_week'] = df_date['datetime'].dt.weekday
                     if is_weekend:
                         df_date = df_date[df_date['day_of_week'] >= 5]
@@ -257,7 +249,6 @@ def load_schedule():
                         continue
             except Exception as e:
                 logger.error(f"Ошибка чтения расписания из файла для {date}: {e}")
-        # Если не удалось прочитать из файла или нет подходящих матчей, генерируем из истории
         schedule = generate_schedule_for_date(date)
         if not schedule.empty:
             all_schedule.append(schedule)
@@ -280,10 +271,10 @@ def get_daily_message():
         0: "Дорогой друг, желаю тебе сегодня фарту букмекерского 🍀",
         1: "Дорогой друг, сегодня желаю тебе нагнуть в привычную позу этот фонбет 💪",
         2: "Дорогой друг, да прибудет с тобой сила ставочная в этот прекрасный день 🔥",
-        3: "Дорогой друг, сегодня настал день играть по крупному и ёбаный рот этого казино 🎰",
+        3: "Дорогой друг, сегодня настал день играть по крупному и ё***** рот этого казино 🎰",
         4: "Дорогой друг, резиновая зина приказала ставить, так чего же ты ждешь? 📢",
-        5: "Дорогой друг, делай ставки и не еби мне голову 🤝",
-        6: "Дорогой друг, сегодня я твой господин и ебать в рот эту Америку 🇺🇸"
+        5: "Дорогой друг, делай ставки и не *** мне голову 🤝",
+        6: "Дорогой друг, сегодня я твой господин и ***** в рот эту Америку 🇺🇸"
     }
     return messages.get(weekday, "Удачных ставок!")
 
@@ -337,6 +328,75 @@ def build_message(forecast_df, schedule_df, offset=0, include_motivation=False):
 
     return "\n".join(lines)
 
+# ---------- СТАТИСТИКА ЗА ДЕНЬ ----------
+def calculate_daily_stats():
+    """Анализирует завершённые матчи за сегодня и возвращает текст отчёта."""
+    if not os.path.exists(BASKEt_FILE) or not os.path.exists(FORECAST_FILE):
+        return "❌ Нет данных для статистики."
+
+    df_games = pd.read_excel(BASKEt_FILE, sheet_name='Лист1', engine='openpyxl')
+    df_forecast = pd.read_excel(FORECAST_FILE, sheet_name='Прогноз', engine='openpyxl')
+
+    today = datetime.now(TIMEZONE).date()
+    today_str = today.strftime('%Y-%m-%d')
+
+    df_games['datetime'] = pd.to_datetime(df_games['дата'].astype(str) + ' ' + df_games['время'].astype(str), errors='coerce')
+    df_today = df_games[df_games['datetime'].dt.date == today].copy()
+    df_today = df_today[df_today['Статус'] == 'Завершена']
+
+    if df_today.empty:
+        return f"📊 За сегодня ({today_str}) завершённых матчей нет."
+
+    teams1 = df_today['Команда 1'].astype(str).str.strip()
+    teams2 = df_today['Команда 2'].astype(str).str.strip()
+    pairs = []
+    for a, b in zip(teams1, teams2):
+        if a < b:
+            pairs.append(f"{a} – {b}")
+        else:
+            pairs.append(f"{b} – {a}")
+    df_today['матчап'] = pairs
+    df_today['total'] = df_today['Счет 1'] + df_today['Счет 2']
+
+    df_merged = pd.merge(df_today, df_forecast, left_on='матчап', right_on='Матчап', how='inner')
+    if df_merged.empty:
+        return "⚠️ Нет прогнозов для сегодняшних матчей."
+
+    def check_interval(row):
+        try:
+            low, high = map(float, row['70% интервал'].split(' – '))
+            return low <= row['total'] <= high
+        except:
+            return False
+
+    df_merged['in_interval'] = df_merged.apply(check_interval, axis=1)
+    df_merged['tm_hit'] = df_merged['total'] <= df_merged['ТМ (мин. линия ≥75%)']
+    df_merged['tb_hit'] = df_merged['total'] >= df_merged['ТБ (макс. линия ≥75%)']
+
+    stable = df_merged[df_merged['Стабильность'] == 'Стабильная']
+    unstable = df_merged[df_merged['Стабильность'] == 'Нестабильная']
+
+    def stats_text(df, label):
+        n = len(df)
+        if n == 0:
+            return f"🔹 {label} (всего: 0)\n   Нет данных.\n"
+        interval_hits = df['in_interval'].sum()
+        tm_hits = df['tm_hit'].sum()
+        tb_hits = df['tb_hit'].sum()
+        return (
+            f"🔹 {label} (всего: {n})\n"
+            f"   70% интервал: {interval_hits}/{n} ({interval_hits/n*100:.1f}%)\n"
+            f"   ТМ: {tm_hits}/{n} ({tm_hits/n*100:.1f}%)\n"
+            f"   ТБ: {tb_hits}/{n} ({tb_hits/n*100:.1f}%)\n"
+        )
+
+    lines = [f"📊 СТАТИСТИКА ЗА СЕГОДНЯ ({today_str})\n"]
+    lines.append(stats_text(stable, "СТАБИЛЬНЫЕ МАТЧИ"))
+    lines.append(stats_text(unstable, "НЕСТАБИЛЬНЫЕ МАТЧИ"))
+    lines.append(stats_text(df_merged, "ОБЩАЯ СТАТИСТИКА"))
+
+    return "\n".join(lines)
+
 # ---------- ЗАДАЧА ДЛЯ ОБНОВЛЕНИЯ СТАТИСТИКИ ----------
 async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
     logger.info("🔄 Запуск обновления статистики из 2score.pro...")
@@ -350,6 +410,12 @@ async def update_and_notify(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"❌ Ошибка обновления: {result.stderr}")
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text=msg)
+        
+        # ---------- ОТПРАВКА СТАТИСТИКИ ----------
+        stats_msg = calculate_daily_stats()
+        for chat_id in CHAT_IDS:
+            await context.bot.send_message(chat_id=chat_id, text=stats_msg)
+        
     except Exception as e:
         error_msg = f"❌ Критическая ошибка при обновлении: {e}"
         logger.error(error_msg)
@@ -385,7 +451,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "Бот запущен! Прогнозы приходят за 5 минут до каждого часа.\n"
         "/now — прогнозы на текущий час\n"
-        "/next — прогнозы на следующий час"
+        "/next — прогнозы на следующий час\n"
+        "/stats — статистика за сегодня"
     )
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -406,6 +473,12 @@ async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = build_message(forecast_df, schedule_df, offset=1, include_motivation=False)
     await update.message.reply_text(msg)
 
+# ---------- НОВАЯ КОМАНДА /stats ----------
+async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Отправляет статистику за сегодня по запросу."""
+    stats_msg = calculate_daily_stats()
+    await update.message.reply_text(stats_msg)
+
 # ---------- ЭХО-ОТЛАДКА ----------
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -422,13 +495,14 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("now", now))
     application.add_handler(CommandHandler("next", next_hour))
+    application.add_handler(CommandHandler("stats", stats_command))  # Новая команда
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
     job_queue = application.job_queue
     if job_queue is None:
         logger.error("JobQueue недоступен!")
     else:
-        # 1. Рассылка прогнозов каждый час в 55 минут
+        # Рассылка прогнозов
         job_queue.run_custom(
             scheduled_send,
             name="hourly_forecast",
@@ -438,7 +512,7 @@ def main():
             }
         )
 
-        # 2. Ежедневное обновление данных с 2score.pro в 00:55
+        # Обновление данных + статистика в 00:55
         job_queue.run_custom(
             update_and_notify,
             name="daily_update",
@@ -448,7 +522,7 @@ def main():
             }
         )
 
-        logger.info("✅ Планировщик настроен: отправка прогнозов в 55 минут каждого часа, обновление данных в 00:55.")
+        logger.info("✅ Планировщик настроен: отправка прогнозов в 55 минут каждого часа, обновление данных и статистика в 00:55.")
 
     application.run_polling()
 
