@@ -107,12 +107,12 @@ def generate_forecasts():
         today = datetime.now(TIMEZONE).date()
         is_weekend = today.weekday() >= 5
         day_type = 'weekend' if is_weekend else 'weekday'
-        logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'}. Использую историю для {day_type}.")
+        logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'}. Использую историю para {day_type}.")
 
         df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
         df = df[df['day_type'] == day_type].copy()
         if df.empty:
-            logger.warning("Нет исторических матчей для данного типа дня.")
+            logger.warning("Нет исторических матчей para данного типа дня.")
             return False
 
         teams1 = df['Команда 1'].astype(str).str.strip()
@@ -272,7 +272,7 @@ def load_forecasts():
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
-# ---------- МОТИВАЦИОННОЕ СООБЩЕНИЕ ----------
+# ---------- МОТИВАЦИЯ ----------
 def get_daily_message():
     weekday = datetime.now(TIMEZONE).weekday()
     messages = {
@@ -338,7 +338,6 @@ def build_message(forecast_df, schedule_df, offset=0, include_motivation=False):
 
 # ---------- СТАТИСТИКА ЗА ДЕНЬ ----------
 def calculate_daily_stats():
-    """Анализирует завершённые матчи за сегодня и возвращает текст отчёта."""
     if not os.path.exists(BASKEt_FILE) or not os.path.exists(FORECAST_FILE):
         return "❌ Нет данных для статистики."
 
@@ -484,9 +483,10 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_msg = calculate_daily_stats()
     await update.message.reply_text(stats_msg, reply_markup=get_main_keyboard())
 
-# ---------- НОВАЯ КОМАНДА /push ----------
+# ---------- НОВАЯ КОМАНДА /push с логированием ----------
 async def push_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручной запуск обновления и пуша на GitHub."""
+    logger.info(f"📥 Команда /push получена от {update.effective_user.id}")
     await update.message.reply_text("🔄 Запускаю обновление и пуш на GitHub...")
     try:
         result = subprocess.run(['python', 'update_results.py'], capture_output=True, text=True, timeout=60)
@@ -520,7 +520,7 @@ def main():
     application.add_handler(CommandHandler("now", now))
     application.add_handler(CommandHandler("next", next_hour))
     application.add_handler(CommandHandler("stats", stats_command))
-    application.add_handler(CommandHandler("push", push_now))   # <-- добавлена команда /push
+    application.add_handler(CommandHandler("push", push_now))   # команда добавлена
 
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
