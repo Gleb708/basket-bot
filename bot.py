@@ -328,8 +328,9 @@ async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
             await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов.")
         return
 
+    # В 10:55 добавляем мотивацию, но отправляем прогнозы на следующий час (offset=1)
     include_motivation = (now.hour == 10)
-    msg = build_message(forecast_df, schedule_df, offset=0, include_motivation=include_motivation)
+    msg = build_message(forecast_df, schedule_df, offset=1, include_motivation=include_motivation)
 
     for chat_id in CHAT_IDS:
         await context.bot.send_message(chat_id=chat_id, text=msg)
@@ -379,7 +380,6 @@ def main():
     application.add_handler(CommandHandler("next", next_hour))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Планировщик через JobQueue с использованием job_kwargs
     job_queue = application.job_queue
     if job_queue is None:
         logger.error("JobQueue недоступен!")
@@ -392,7 +392,7 @@ def main():
                 'misfire_grace_time': 60
             }
         )
-        logger.info("✅ Планировщик настроен: отправка в 55 минут каждого часа.")
+        logger.info("✅ Планировщик настроен: отправка в 55 минут каждого часа (прогнозы на следующий час).")
 
     application.run_polling()
 
