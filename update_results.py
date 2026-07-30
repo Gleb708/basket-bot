@@ -10,11 +10,19 @@ URL = "https://2score.pro/ru/basketball/ipbl-pro-division-2496666/"
 EXCEL_FILE = "Basket_3.xlsx"
 GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Берём из переменных окружения
 
-# ---------- ФУНКЦИЯ ПУША НА GITHUB ----------
+# ---------- ФУНКЦИЯ ПУША НА GITHUB С ПОДРОБНЫМ ЛОГИРОВАНИЕМ ----------
 def push_to_github():
     """Добавляет изменения в git и пушит в репозиторий."""
+    print("🔄 Начинаю пуш на GitHub...")
+
     if not GITHUB_TOKEN:
-        print("⚠️ GITHUB_TOKEN не задан, пуш не выполнен.")
+        print("❌ GITHUB_TOKEN не задан в переменных окружения!")
+        return
+
+    # Проверяем, есть ли файл в репозитории (отслеживается ли git)
+    result_status = subprocess.run(["git", "status", "--porcelain", EXCEL_FILE], capture_output=True, text=True)
+    if not result_status.stdout.strip():
+        print(f"ℹ️ Файл {EXCEL_FILE} не изменён или не отслеживается. Пуш не требуется.")
         return
 
     # Настраиваем git (если не настроен)
@@ -22,6 +30,7 @@ def push_to_github():
     subprocess.run(["git", "config", "user.email", "bot@example.com"], check=False)
 
     # Добавляем файл
+    print(f"📌 Добавляю {EXCEL_FILE} в git...")
     result_add = subprocess.run(["git", "add", EXCEL_FILE], capture_output=True, text=True)
     if result_add.returncode != 0:
         print(f"❌ Ошибка git add: {result_add.stderr}")
@@ -29,12 +38,12 @@ def push_to_github():
 
     # Коммитим
     commit_msg = f"Автоматическое обновление Basket_3.xlsx ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+    print(f"📝 Создаю коммит: {commit_msg}")
     result_commit = subprocess.run(
         ["git", "commit", "-m", commit_msg],
         capture_output=True, text=True
     )
     if result_commit.returncode != 0:
-        # Если нет изменений – выходим
         if "nothing to commit" in result_commit.stderr:
             print("ℹ️ Нет новых данных для коммита.")
             return
@@ -43,6 +52,7 @@ def push_to_github():
 
     # Пушим (используем токен для аутентификации)
     remote_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/Gleb708/basket-bot.git"
+    print("🚀 Выполняю git push...")
     result_push = subprocess.run(
         ["git", "push", remote_url, "main"],
         capture_output=True, text=True
