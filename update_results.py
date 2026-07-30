@@ -8,61 +8,49 @@ import subprocess
 # ---------- НАСТРОЙКИ ----------
 URL = "https://2score.pro/ru/basketball/ipbl-pro-division-2496666/"
 EXCEL_FILE = "Basket_3.xlsx"
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Берём из переменных окружения
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
 
-# ---------- ФУНКЦИЯ ПУША НА GITHUB С ПОДРОБНЫМ ЛОГИРОВАНИЕМ ----------
+# ---------- ОТЛАДКА: показываем строки с матчами ----------
+def debug_html(html):
+    lines = html.split('\n')
+    match_lines = [line for line in lines if 'Завершена' in line and 'href=' in line]
+    print(f"🔍 Найдено строк с 'Завершена': {len(match_lines)}")
+    if match_lines:
+        print("📄 Первые 5 таких строк:")
+        for i, line in enumerate(match_lines[:5]):
+            print(f"   {i+1}: {line[:200]}...")  # первые 200 символов
+
+# ---------- ФУНКЦИЯ ПУША ----------
 def push_to_github():
-    """Добавляет изменения в git и пушит в репозиторий."""
-    print("🔄 Начинаю пуш на GitHub...")
-
     if not GITHUB_TOKEN:
-        print("❌ GITHUB_TOKEN не задан в переменных окружения!")
+        print("❌ GITHUB_TOKEN не задан.")
         return
 
-    # Проверяем, есть ли файл в репозитории (отслеживается ли git)
-    result_status = subprocess.run(["git", "status", "--porcelain", EXCEL_FILE], capture_output=True, text=True)
-    if not result_status.stdout.strip():
-        print(f"ℹ️ Файл {EXCEL_FILE} не изменён или не отслеживается. Пуш не требуется.")
-        return
-
-    # Настраиваем git (если не настроен)
     subprocess.run(["git", "config", "user.name", "basket-bot"], check=False)
     subprocess.run(["git", "config", "user.email", "bot@example.com"], check=False)
 
-    # Добавляем файл
-    print(f"📌 Добавляю {EXCEL_FILE} в git...")
     result_add = subprocess.run(["git", "add", EXCEL_FILE], capture_output=True, text=True)
     if result_add.returncode != 0:
-        print(f"❌ Ошибка git add: {result_add.stderr}")
+        print(f"❌ git add: {result_add.stderr}")
         return
 
-    # Коммитим
     commit_msg = f"Автоматическое обновление Basket_3.xlsx ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
-    print(f"📝 Создаю коммит: {commit_msg}")
-    result_commit = subprocess.run(
-        ["git", "commit", "-m", commit_msg],
-        capture_output=True, text=True
-    )
+    result_commit = subprocess.run(["git", "commit", "-m", commit_msg], capture_output=True, text=True)
     if result_commit.returncode != 0:
         if "nothing to commit" in result_commit.stderr:
-            print("ℹ️ Нет новых данных для коммита.")
+            print("ℹ️ Нет изменений для коммита.")
             return
-        print(f"❌ Ошибка git commit: {result_commit.stderr}")
+        print(f"❌ git commit: {result_commit.stderr}")
         return
 
-    # Пушим (используем токен для аутентификации)
     remote_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/Gleb708/basket-bot.git"
-    print("🚀 Выполняю git push...")
-    result_push = subprocess.run(
-        ["git", "push", remote_url, "main"],
-        capture_output=True, text=True
-    )
+    result_push = subprocess.run(["git", "push", remote_url, "main"], capture_output=True, text=True)
     if result_push.returncode != 0:
-        print(f"❌ Ошибка git push: {result_push.stderr}")
+        print(f"❌ git push: {result_push.stderr}")
     else:
-        print("✅ Изменения успешно запушены на GitHub.")
+        print("✅ Пуш выполнен.")
 
-# ---------- ОСТАЛЬНОЙ КОД (ПАРСИНГ) ----------
+# ---------- ПАРСИНГ ----------
 def parse_match(line):
     if "Завершена" not in line:
         return None
@@ -130,6 +118,9 @@ def update_excel():
         print(f"❌ Ошибка загрузки: {e}")
         return
 
+    # Отладочный вывод
+    debug_html(html)
+
     lines = html.split('\n')
     new_matches = []
     for line in lines:
@@ -170,7 +161,7 @@ def update_excel():
 
     print(f"✅ Файл обновлён! Добавлено {len(df_new)} новых матчей. Всего записей: {len(df_combined)}")
 
-    # ---------- АВТОМАТИЧЕСКИЙ ПУШ ----------
+    # Пуш
     push_to_github()
 
 if __name__ == "__main__":
