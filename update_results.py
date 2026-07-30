@@ -3,38 +3,77 @@ import re
 import pandas as pd
 from datetime import datetime
 import os
+import subprocess
 
 # ---------- НАСТРОЙКИ ----------
 URL = "https://2score.pro/ru/basketball/ipbl-pro-division-2496666/"
 EXCEL_FILE = "Basket_3.xlsx"
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")  # Берём из переменных окружения
 
-# ---------- ФУНКЦИЯ ПАРСИНГА ОДНОЙ СТРОКИ ----------
+# ---------- ФУНКЦИЯ ПУША НА GITHUB ----------
+def push_to_github():
+    """Добавляет изменения в git и пушит в репозиторий."""
+    if not GITHUB_TOKEN:
+        print("⚠️ GITHUB_TOKEN не задан, пуш не выполнен.")
+        return
+
+    # Настраиваем git (если не настроен)
+    subprocess.run(["git", "config", "user.name", "basket-bot"], check=False)
+    subprocess.run(["git", "config", "user.email", "bot@example.com"], check=False)
+
+    # Добавляем файл
+    result_add = subprocess.run(["git", "add", EXCEL_FILE], capture_output=True, text=True)
+    if result_add.returncode != 0:
+        print(f"❌ Ошибка git add: {result_add.stderr}")
+        return
+
+    # Коммитим
+    commit_msg = f"Автоматическое обновление Basket_3.xlsx ({datetime.now().strftime('%Y-%m-%d %H:%M')})"
+    result_commit = subprocess.run(
+        ["git", "commit", "-m", commit_msg],
+        capture_output=True, text=True
+    )
+    if result_commit.returncode != 0:
+        # Если нет изменений – выходим
+        if "nothing to commit" in result_commit.stderr:
+            print("ℹ️ Нет новых данных для коммита.")
+            return
+        print(f"❌ Ошибка git commit: {result_commit.stderr}")
+        return
+
+    # Пушим (используем токен для аутентификации)
+    remote_url = f"https://x-access-token:{GITHUB_TOKEN}@github.com/Gleb708/basket-bot.git"
+    result_push = subprocess.run(
+        ["git", "push", remote_url, "main"],
+        capture_output=True, text=True
+    )
+    if result_push.returncode != 0:
+        print(f"❌ Ошибка git push: {result_push.stderr}")
+    else:
+        print("✅ Изменения успешно запушены на GitHub.")
+
+# ---------- ОСТАЛЬНОЙ КОД (ПАРСИНГ) ----------
 def parse_match(line):
     if "Завершена" not in line:
         return None
 
-    # Дата и время
     date_match = re.search(r'(\d{2}\.\d{2})\s+(\d{2}:\d{2})', line)
     if not date_match:
         return None
     date_str, time_str = date_match.groups()
 
-    # Извлекаем ссылку на матч, чтобы получить названия команд
     link_match = re.search(r'href="([^"]+)"', line)
     if not link_match:
         return None
     slug = link_match.group(1).split('/')[-2] if '/' in link_match.group(1) else ''
     if '-' in slug:
         parts = slug.split('-')
-        # Убираем числовой ID в конце, если есть
         if parts[-1].isdigit():
             parts = parts[:-1]
-        # Разделяем на две команды (примерно пополам)
         mid = len(parts) // 2
         team1 = ' '.join(parts[:mid]).replace('-', ' ').title().strip()
         team2 = ' '.join(parts[mid:]).replace('-', ' ').title().strip()
     else:
-        # fallback
         rest = re.sub(r'\d{2}\.\d{2}\s+\d{2}:\d{2}\s+', '', line)
         teams_part = rest.split("Завершена")[0].strip()
         words = teams_part.split()
@@ -45,7 +84,6 @@ def parse_match(line):
             team1 = teams_part
             team2 = ''
 
-    # Счёт и четверти
     numbers = re.findall(r'\b\d{1,3}\b', line)
     if len(numbers) < 10:
         return None
@@ -71,7 +109,6 @@ def parse_match(line):
         'Статус': 'Завершена'
     }
 
-# ---------- ОСНОВНАЯ ФУНКЦИЯ ----------
 def update_excel():
     print("📡 Загрузка страницы...")
     try:
@@ -83,7 +120,6 @@ def update_excel():
         print(f"❌ Ошибка загрузки: {e}")
         return
 
-    # Ищем все строки с завершёнными матчами
     lines = html.split('\n')
     new_matches = []
     for line in lines:
@@ -98,16 +134,13 @@ def update_excel():
 
     print(f"✅ Найдено завершённых матчей: {len(new_matches)}")
 
-    # Загружаем существующий файл
     if os.path.exists(EXCEL_FILE):
         df_existing = pd.read_excel(EXCEL_FILE, sheet_name='Лист1', engine='openpyxl')
     else:
         df_existing = pd.DataFrame()
 
-    # Создаём DataFrame из новых матчей
     df_new = pd.DataFrame(new_matches)
 
-    # Убираем дубликаты (по дате, времени и командам)
     if not df_existing.empty:
         df_existing['key'] = df_existing['дата'].astype(str) + '|' + df_existing['время'].astype(str) + '|' + df_existing['Команда 1'] + '|' + df_existing['Команда 2']
         df_new['key'] = df_new['дата'].astype(str) + '|' + df_new['время'].astype(str) + '|' + df_new['Команда 1'] + '|' + df_new['Команда 2']
@@ -118,18 +151,17 @@ def update_excel():
         print("✅ Все матчи уже есть в файле.")
         return
 
-    # Добавляем новые строки в конец
     df_combined = pd.concat([df_existing, df_new], ignore_index=True)
-
-    # Сортируем по дате и времени (опционально)
     df_combined['datetime'] = pd.to_datetime(df_combined['дата'].astype(str) + ' ' + df_combined['время'].astype(str), errors='coerce')
     df_combined = df_combined.sort_values('datetime').drop(columns=['datetime'])
 
-    # Сохраняем
     with pd.ExcelWriter(EXCEL_FILE, engine='openpyxl') as writer:
         df_combined.to_excel(writer, sheet_name='Лист1', index=False)
 
     print(f"✅ Файл обновлён! Добавлено {len(df_new)} новых матчей. Всего записей: {len(df_combined)}")
+
+    # ---------- АВТОМАТИЧЕСКИЙ ПУШ ----------
+    push_to_github()
 
 if __name__ == "__main__":
     update_excel()
