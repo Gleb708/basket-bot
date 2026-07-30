@@ -4,8 +4,8 @@ import os
 import warnings
 warnings.filterwarnings('ignore')
 
-# ---------- АВТОУСТАНОВКА БИБЛИОТЕК ----------
-required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'apscheduler', 'python-telegram-bot', 'scipy']
+# ---------- АВТОУСТАНОВКА ----------
+required_packages = ['pandas', 'openpyxl', 'numpy', 'pytz', 'python-telegram-bot', 'scipy']
 for pkg in required_packages:
     try:
         __import__(pkg.replace('-', '_'))
@@ -13,7 +13,7 @@ for pkg in required_packages:
         print(f"⚠️ Устанавливаю {pkg}...")
         subprocess.check_call([sys.executable, '-m', 'pip', 'install', pkg])
 
-# Теперь импорты
+# ---------- ИМПОРТЫ ----------
 import pandas as pd
 import numpy as np
 from scipy.stats import t as t_dist
@@ -23,14 +23,8 @@ import logging
 import pytz
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-from apscheduler.schedulers.background import BackgroundScheduler
-from apscheduler.triggers.cron import CronTrigger
 
-# ---------- НАСТРОЙКА ЛОГИРОВАНИЯ (ДЕБАГ) ----------
-logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ---------- КОНФИГУРАЦИЯ ----------
@@ -45,7 +39,7 @@ Z_75 = norm.ppf(0.75)
 MIN_GAMES_FOR_STABLE = 3
 CV_THRESHOLD = 10.0
 
-# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ДЛЯ РАСЧЁТА ----------
+# ---------- ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ----------
 def round_up_to_half(x):
     return np.ceil(x * 2) / 2
 
@@ -104,7 +98,7 @@ def generate_forecasts():
         today = datetime.now(TIMEZONE).date()
         is_weekend = today.weekday() >= 5
         day_type = 'weekend' if is_weekend else 'weekday'
-        logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'} день. Использую историю для {day_type}.")
+        logger.info(f"Сегодня {'выходной' if is_weekend else 'будний'}. Использую историю для {day_type}.")
 
         df['day_type'] = df['datetime'].dt.weekday.apply(lambda x: 'weekend' if x >= 5 else 'weekday')
         df = df[df['day_type'] == day_type].copy()
@@ -185,7 +179,7 @@ def generate_forecasts():
         logger.error(f"Ошибка генерации прогнозов: {e}")
         return False
 
-# ---------- ГЕНЕРАЦИЯ РАСПИСАНИЯ ----------
+# ---------- РАСПИСАНИЕ ----------
 def get_typical_time(group):
     return group['datetime'].max().time()
 
@@ -252,8 +246,22 @@ def load_forecasts():
         return pd.DataFrame()
     return pd.read_excel(FORECAST_FILE, sheet_name='Прогноз')
 
+# ---------- МОТИВАЦИОННОЕ СООБЩЕНИЕ ПО ДНЯМ ----------
+def get_daily_message():
+    weekday = datetime.now(TIMEZONE).weekday()  # 0=пн, 6=вс
+    messages = {
+        0: "Дорогой друг, желаю тебе сегодня фарту букмекерского 🍀",
+        1: "Дорогой друг, сегодня желаю тебе нагнуть в привычную позу этот фонбет 💪",
+        2: "Дорогой друг, да прибудет с тобой сила ставочная в этот прекрасный день 🔥",
+        3: "Дорогой друг, сегодня настал день играть по крупному и ёбаный рот этого казино 🎰",
+        4: "Дорогой друг, резиновая зина приказала ставить, так чего же ты ждешь? 📢",
+        5: "Дорогой друг, делай ставки и не еби мне голову 🤝",
+        6: "Дорогой друг, сегодня я твой господин и ебать в рот эту Америку 🇺🇸"
+    }
+    return messages.get(weekday, "Удачных ставок!")
+
 # ---------- ФОРМИРОВАНИЕ СООБЩЕНИЯ ----------
-def build_message(forecast_df, schedule_df, offset=0):
+def build_message(forecast_df, schedule_df, offset=0, include_motivation=False):
     if forecast_df.empty or schedule_df.empty:
         return "Нет данных для прогнозов."
 
@@ -278,7 +286,12 @@ def build_message(forecast_df, schedule_df, offset=0):
     day_ru = ru_days.get(day_name, day_name)
 
     prefix = "Следующий час" if offset == 1 else "Текущий час"
-    lines = [f"📅 {day_ru}, {prefix} ({hour_start.strftime('%H:%M')})\n"]
+    lines = []
+    if include_motivation:
+        lines.append(get_daily_message())
+        lines.append("")
+    lines.append(f"📅 {day_ru}, {prefix} ({hour_start.strftime('%H:%M')})")
+    lines.append("")
 
     for _, row in merged.iterrows():
         match = row['матчап']
@@ -297,23 +310,30 @@ def build_message(forecast_df, schedule_df, offset=0):
 
     return "\n".join(lines)
 
-# ---------- ОТПРАВКА ----------
-async def send_forecast(context: ContextTypes.DEFAULT_TYPE):
-    logger.info("Запуск отправки прогнозов...")
+# ---------- ЗАДАЧА ДЛЯ ПЛАНИРОВЩИКА ----------
+async def scheduled_send(context: ContextTypes.DEFAULT_TYPE):
+    now = datetime.now(TIMEZONE)
+    logger.info(f"⏰ Запуск отправки прогнозов (время: {now.strftime('%H:%M')})...")
+
     if not generate_forecasts():
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text="Не удалось сгенерировать прогнозы.")
         return
+
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
     if forecast_df.empty or schedule_df.empty:
         for chat_id in CHAT_IDS:
             await context.bot.send_message(chat_id=chat_id, text="Нет данных для прогнозов.")
         return
-    msg = build_message(forecast_df, schedule_df, offset=0)
+
+    # Если сейчас 10:55 (час = 10), добавляем мотивацию
+    include_motivation = (now.hour == 10)
+    msg = build_message(forecast_df, schedule_df, offset=0, include_motivation=include_motivation)
+
     for chat_id in CHAT_IDS:
         await context.bot.send_message(chat_id=chat_id, text=msg)
-    logger.info("Прогнозы отправлены.")
+    logger.info("✅ Прогнозы отправлены всем получателям.")
 
 # ---------- ОБРАБОТЧИКИ КОМАНД ----------
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -324,30 +344,26 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def now(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.debug(f"Команда /now от {update.effective_user.id}")
     if not generate_forecasts():
         await update.message.reply_text("Не удалось сгенерировать прогнозы.")
         return
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
-    msg = build_message(forecast_df, schedule_df, offset=0)
+    msg = build_message(forecast_df, schedule_df, offset=0, include_motivation=False)
     await update.message.reply_text(msg)
 
 async def next_hour(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.debug(f"Команда /next от {update.effective_user.id}")
     if not generate_forecasts():
         await update.message.reply_text("Не удалось сгенерировать прогнозы.")
         return
     forecast_df = load_forecasts()
     schedule_df = load_schedule()
-    msg = build_message(forecast_df, schedule_df, offset=1)
+    msg = build_message(forecast_df, schedule_df, offset=1, include_motivation=False)
     await update.message.reply_text(msg)
 
-# ---------- ОТЛАДОЧНЫЙ ОБРАБОТЧИК (ЭХО) ----------
+# ---------- ЭХО-ОТЛАДКА ----------
 async def echo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
-    logger.debug(f"Получено текстовое сообщение: {text}")
-    # Отвечаем только если это не команда (чтобы не мешать)
     if not text.startswith('/'):
         await update.message.reply_text(f"Эхо: {text}")
 
@@ -358,22 +374,26 @@ def main():
 
     application = Application.builder().token(TOKEN).build()
 
-    # Регистрируем команды
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("now", now))
     application.add_handler(CommandHandler("next", next_hour))
-
-    # Отладочный обработчик для всех текстовых сообщений (кроме команд)
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, echo))
 
-    # Планировщик
-    scheduler = BackgroundScheduler(timezone=TIMEZONE)
-    scheduler.add_job(
-        lambda: application.create_task(send_forecast(application.bot, None)),
-        CronTrigger(minute=55, hour="*", timezone=TIMEZONE)
-    )
-    scheduler.start()
-    logger.info("Планировщик запущен. Бот будет отправлять прогнозы в 55 минут каждого часа.")
+    # Планировщик через JobQueue
+    job_queue = application.job_queue
+    if job_queue is None:
+        logger.error("JobQueue недоступен!")
+    else:
+        job_queue.run_custom(
+            scheduled_send,
+            name="hourly_forecast",
+            job_kwargs={'misfire_grace_time': 60},
+            trigger='cron',
+            minute=55,
+            hour='*',
+            timezone=TIMEZONE
+        )
+        logger.info("✅ Планировщик настроен: отправка в 55 минут каждого часа.")
 
     application.run_polling()
 
