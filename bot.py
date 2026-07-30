@@ -484,6 +484,19 @@ async def stats_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     stats_msg = calculate_daily_stats()
     await update.message.reply_text(stats_msg, reply_markup=get_main_keyboard())
 
+# ---------- НОВАЯ КОМАНДА /push ----------
+async def push_now(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручной запуск обновления и пуша на GitHub."""
+    await update.message.reply_text("🔄 Запускаю обновление и пуш на GitHub...")
+    try:
+        result = subprocess.run(['python', 'update_results.py'], capture_output=True, text=True, timeout=60)
+        if result.returncode == 0:
+            await update.message.reply_text("✅ Файл обновлён и запушен на GitHub.")
+        else:
+            await update.message.reply_text(f"❌ Ошибка: {result.stderr}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Критическая ошибка: {e}")
+
 # ---------- ОБРАБОТЧИК КНОПОК ----------
 async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text
@@ -494,7 +507,6 @@ async def handle_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif text == "⏩ Далее":
         await next_hour(update, context)
     else:
-        # Эхо для любых других текстов (можно убрать)
         await update.message.reply_text(f"Эхо: {text}", reply_markup=get_main_keyboard())
 
 # ---------- ЗАПУСК ----------
@@ -508,8 +520,8 @@ def main():
     application.add_handler(CommandHandler("now", now))
     application.add_handler(CommandHandler("next", next_hour))
     application.add_handler(CommandHandler("stats", stats_command))
-    
-    # Обработчик кнопок (текстовые сообщения, не являющиеся командами)
+    application.add_handler(CommandHandler("push", push_now))   # <-- добавлена команда /push
+
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_buttons))
 
     job_queue = application.job_queue
